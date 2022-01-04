@@ -63,7 +63,11 @@ do
   do
     dataset=${workload}'-'${read_frac}'R-'${req_dist}
     echo 'Process '${dataset}
-    python3 numerical_flow.py --dataset=${dataset} --input_dir=${input_dir} --output_dir=${output_dir} --seed=${seeds[$workload]} --normalize=${normalize[$workload]} --paras=${flow_para[$workload]}
+    python3 numerical_flow.py --dataset=${dataset} --input_dir=${input_dir} \
+                              --output_dir=${output_dir} \
+                              --seed=${seeds[$workload]} \
+                              --normalize=${normalize[$workload]} \
+                              --paras=${flow_para[$workload]}
     if [ ${test} = true ];then
       break
     fi

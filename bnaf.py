@@ -1,6 +1,13 @@
 import torch
 import math
 
+def enumerate_inv(l):
+    stack = []
+    for li in l:
+        stack.append(li)
+    n = len(stack)
+    for i in range(n):
+        yield (i, stack.pop())
 
 class Sequential(torch.nn.Sequential):
     """
@@ -29,6 +36,11 @@ class Sequential(torch.nn.Sequential):
             for i, module in enumerate(self._modules.values()):
                 inputs = module(inputs)
             return inputs
+
+    def inverse(self, inputs: torch.Tensor):
+        for i, module in enumerate_inv(self._modules.values()):
+            inputs = module.inverse(inputs)
+        return inputs
 
     def save_weights(self, f):
         for i, module in enumerate(self._modules.values()):
@@ -103,6 +115,12 @@ class BNAF(torch.nn.Sequential):
             else:
                 return outputs
 
+    def inverse(self, inputs: torch.Tensor):
+        assert self.res != "normal" and self.res != "gated"
+
+        for i, module in enumerate_inv(self._modules.values()):
+            inputs = module.inverse(inputs)
+        return inputs
 
     def save_weights(self, f):
         for module in self._modules.values():
@@ -154,6 +172,9 @@ class Permutation(torch.nn.Module):
             return inputs[:, self.p], 0
         else:
             return inputs[:, self.p]
+
+    def inverse(self, inputs: torch.Tensor):
+        return inputs
 
     def save_weights(self, f):
         pass
@@ -282,6 +303,9 @@ class MaskedWeight(torch.nn.Module):
 
             return inputs.matmul(w) + self.bias
 
+    def inverse(self, inputs: torch.Tensor):
+        w = self.get_weights()
+        return (inputs - self.bias).matmul(w.inverse())
 
     def save_weights(self, f):
         w = self.get_weights()
@@ -324,6 +348,9 @@ class Tanh(torch.nn.Tanh):
             return torch.tanh(inputs), (g.view(grad.shape) + grad) if grad is not None else g
         else:
             return torch.tanh(inputs)
+
+    def inverse(self, inputs: torch.Tensor):
+        return 0.5 * (torch.log(1 + inputs) - torch.log(1 - inputs))
 
     def save_weights(self, f):
         pass

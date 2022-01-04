@@ -4,12 +4,13 @@ import torch
 import os
 import psutil
 
-def load_data(location, data_type):
+def load_data(location, data_type='training'):
     inputs = np.loadtxt(location + '-' + data_type + '.txt', delimiter='\t', dtype=np.float64, ndmin=2)
     data = torch.from_numpy(inputs).double()
+    # data = torch.load(location)
     return data
 
-def seg_data(data, debug=False):
+def seg_data(data):
     torch.set_printoptions(precision=10)
     seg_data = []
     seg_times = 100000

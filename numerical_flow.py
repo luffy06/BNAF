@@ -56,7 +56,6 @@ def compute_log_p_x(model, x_mb, args):
         y_mb = torch.nan_to_num(y_mb, nan=eps)
     mean = torch.zeros_like(y_mb)
     var = torch.ones_like(y_mb)
-    var[:, -1] *= 1e16
     log_p_y_mb = torch.distributions.Normal(mean, var).log_prob(y_mb).sum(-1)
     return log_p_y_mb + log_diag_j_mb
 
@@ -157,6 +156,17 @@ def transform_workload(keys, args, model, save_path, sort=False):
         np.savetxt(os.path.join(args.output_dir, save_path), tran_keys.squeeze().cpu().numpy(), fmt='%.32f')
     del tran_keys
 
+
+def sample(args, model):
+    mean = torch.zeros(args.input_dim).to(args.device)
+    var = torch.ones(args.input_dim).to(args.device)
+    sample_keys = torch.distributions.Normal(mean, var).sample(sample_shape=(args.sample_number, )).to(args.device)
+    # Normalizing to [-1, 1]
+    sample_keys = 2 * (sample_keys - torch.min(sample_keys)) / (torch.max(sample_keys) - torch.min(sample_keys)) - 1
+    model.eval()
+    return model.inverse(sample_keys)
+
+
 def run_bnaf(args):
     # Set output file
     # output_filename = args.dataset + '-' + ('NS-' if args.seg else '1S-') + str(args.input_dim) + 'D' + '-' + str(args.layers) + 'L-' + str(args.hidden_dim * args.input_dim) + 'H-' + args.loss_func
@@ -175,8 +185,8 @@ def run_bnaf(args):
 
     # Loading data, analyzing data, segmenting data
     print('Process: Loading data...')
-    load_keys = load_data(os.path.join(args.input_dir, args.dataset), 'training')
-    evaluate_keys(load_keys)
+    train_keys = load_data(os.path.join(args.input_dir, args.dataset))
+    train_keys, _ = train_data(train_keys, args.input_dim, 0.1, 'point', dim=args.batch_dim)
 
     print('Process: Normalizing data...')
     if args.normalize != None:
@@ -186,7 +196,6 @@ def run_bnaf(args):
         print('Variance', var)
         load_keys = (load_keys - mean) / var
 
-    train_keys, emperical_gap = train_data(load_keys, args.input_dim, 0.1, 'point', dim=args.batch_dim)
     print('Process: Creating BNAF model...')
     model = create_model(args, verbose=True)
     print('Process: Creating optimizer...')
@@ -211,31 +220,21 @@ def run_bnaf(args):
             return 
         save(model, optimizer, os.path.join(args.load or args.path, 'checkpoint.pt'))
     
-    print('Process: Saving weights...')
-    save_weights(args.dataset, args.output_dir, output_filename, dims, model, mean, var)
-
-    print('Process: Transforming load and test keys...')
-    output_training_path = os.path.join(args.output_dir, output_filename + '-training-bnaf.txt')    
-    transform_workload(load_keys, args, model, output_training_path, True)
-    if args.save_keys:
-        test_keys = load_data(os.path.join(args.input_dir, args.dataset), 'testing')
-        if args.normalize != None:
-            test_keys = (test_keys - mean) / var
-        output_test_path = os.path.join(args.output_dir, output_filename + '-testing-bnaf.txt')
-        transform_workload(test_keys, args, model, output_test_path, False)
+    gen_keys = sample(args, model)
 
 
 if __name__ == '__main__':
     # Initializing parameters for flow models
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', type=str, default='cuda:0')
-    parser.add_argument('--input_dir', type=str, default='../inputs')
-    parser.add_argument('--output_dir', type=str, default='../outputs')
+    parser.add_argument('--input_dir', type=str, default='inputs')
+    parser.add_argument('--output_dir', type=str, default='outputs')
     parser.add_argument('--read_ratio', type=int, default=100)
     parser.add_argument('--req_dist', type=str, default='zipf')
     parser.add_argument('--dataset', type=str, default='lognormal-19M-var(0.5)-100R-zipf')
     parser.add_argument('--seed', type=int, default=1000000007)
     parser.add_argument('--save_keys', type=bool, default=False)
+    parser.add_argument('--sample_number', type=int, default=100000)
 
     parser.add_argument('--normalize', type=int, default=None)
     parser.add_argument('--learning_rate', type=float, default=1e-2)
@@ -249,7 +248,7 @@ if __name__ == '__main__':
     parser.add_argument('--lbd2', type=float, default=5)
     parser.add_argument('--seg', type=bool, default=False)
     parser.add_argument('--loss_func', type=str, default='normal')
-    parser.add_argument('--batch_dim', type=int, default=256)
+    parser.add_argument('--batch_dim', type=int, default=2048)
     parser.add_argument('--block_dim', type=int, default=32)
     parser.add_argument('--flows', type=int, default=1)
     parser.add_argument('--layers', type=int, default=2)
