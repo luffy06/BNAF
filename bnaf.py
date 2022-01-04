@@ -20,11 +20,19 @@ class Sequential(torch.nn.Sequential):
         """
 
         log_det_jacobian = 0.0
-        for i, module in enumerate(self._modules.values()):
-            inputs, log_det_jacobian_ = module(inputs)
-            log_det_jacobian = log_det_jacobian + log_det_jacobian_
-        return inputs, log_det_jacobian
+        if self.training:
+            for i, module in enumerate(self._modules.values()):
+                inputs, log_det_jacobian_ = module(inputs)
+                log_det_jacobian = log_det_jacobian + log_det_jacobian_
+            return inputs, log_det_jacobian
+        else:
+            for i, module in enumerate(self._modules.values()):
+                inputs = module(inputs)
+            return inputs
 
+    def save_weights(self, f):
+        for i, module in enumerate(self._modules.values()):
+            module.save_weights(f)
 
 class BNAF(torch.nn.Sequential):
     """
@@ -65,24 +73,40 @@ class BNAF(torch.nn.Sequential):
         outputs = inputs
         grad = None
 
-        for module in self._modules.values():
-            outputs, grad = module(outputs, grad)
+        if self.training:
+            for module in self._modules.values():
+                outputs, grad = module(outputs, grad)
 
-            grad = grad if len(grad.shape) == 4 else grad.view(grad.shape + [1, 1])
+                grad = grad if len(grad.shape) == 4 else grad.view(grad.shape + [1, 1])
 
-        assert inputs.shape[-1] == outputs.shape[-1]
+            assert inputs.shape[-1] == outputs.shape[-1]
 
-        if self.res == "normal":
-            return inputs + outputs, torch.nn.functional.softplus(grad.squeeze()).sum(
-                -1
-            )
-        elif self.res == "gated":
-            return self.gate.sigmoid() * outputs + (1 - self.gate.sigmoid()) * inputs, (
-                torch.nn.functional.softplus(grad.squeeze() + self.gate)
-                - torch.nn.functional.softplus(self.gate)
-            ).sum(-1)
+            if self.res == "normal":
+                return inputs + outputs, torch.nn.functional.softplus(grad.squeeze()).sum(-1)
+            elif self.res == "gated":
+                return self.gate.sigmoid() * outputs + (1 - self.gate.sigmoid()) * inputs, (
+                    torch.nn.functional.softplus(grad.squeeze() + self.gate)
+                    - torch.nn.functional.softplus(self.gate)
+                ).sum(-1)
+            else:
+                return outputs, grad.squeeze().sum(-1)
         else:
-            return outputs, grad.squeeze().sum(-1)
+            for module in self._modules.values():
+                outputs = module(outputs)
+
+            assert inputs.shape[-1] == outputs.shape[-1]
+
+            if self.res == "normal":
+                return inputs + outputs
+            elif self.res == "gated":
+                return self.gate.sigmoid() * outputs + (1 - self.gate.sigmoid()) * inputs
+            else:
+                return outputs
+
+
+    def save_weights(self, f):
+        for module in self._modules.values():
+            module.save_weights(f)
 
     def _get_name(self):
         return "BNAF(res={})".format(self.res)
@@ -126,8 +150,13 @@ class Permutation(torch.nn.Module):
         -------
         The permuted tensor and the log-det-Jacobian of this permutation.
         """
+        if self.training:
+            return inputs[:, self.p], 0
+        else:
+            return inputs[:, self.p]
 
-        return inputs[:, self.p], 0
+    def save_weights(self, f):
+        pass
 
     def __repr__(self):
         return "Permutation(in_features={}, p={})".format(self.in_features, self.p)
@@ -207,18 +236,26 @@ class MaskedWeight(torch.nn.Module):
         Computes the weight matrix using masks and weight normalization.
         It also compute the log diagonal blocks of it.
         """
+        if self.training:
+            w = torch.exp(self._weight) * self.mask_d + self._weight * self.mask_o
 
-        w = torch.exp(self._weight) * self.mask_d + self._weight * self.mask_o
+            w_squared_norm = (w ** 2).sum(-1, keepdim=True)
 
-        w_squared_norm = (w ** 2).sum(-1, keepdim=True)
+            w = self._diag_weight.exp() * w / w_squared_norm.sqrt()
 
-        w = self._diag_weight.exp() * w / w_squared_norm.sqrt()
+            wpl = self._diag_weight + self._weight - 0.5 * torch.log(w_squared_norm)
 
-        wpl = self._diag_weight + self._weight - 0.5 * torch.log(w_squared_norm)
+            return w.t(), wpl.t()[self.mask_d.bool().t()].view(
+                self.dim, self.in_features // self.dim, self.out_features // self.dim)
+        else:
+            w = torch.exp(self._weight) * self.mask_d + self._weight * self.mask_o
 
-        return w.t(), wpl.t()[self.mask_d.bool().t()].view(
-            self.dim, self.in_features // self.dim, self.out_features // self.dim
-        )
+            w_squared_norm = (w ** 2).sum(-1, keepdim=True)
+
+            w = self._diag_weight.exp() * w / w_squared_norm.sqrt()
+
+            return w.t()
+
 
     def forward(self, inputs, grad: torch.Tensor = None):
         """
@@ -233,17 +270,25 @@ class MaskedWeight(torch.nn.Module):
         The output tensor and the log diagonal blocks of the partial log-Jacobian of previous
         transformations combined with this transformation.
         """
+        if self.training:
+            w, wpl = self.get_weights()
 
-        w, wpl = self.get_weights()
+            g = wpl.transpose(-2, -1).unsqueeze(0).repeat(inputs.shape[0], 1, 1, 1)
 
-        g = wpl.transpose(-2, -1).unsqueeze(0).repeat(inputs.shape[0], 1, 1, 1)
+            return inputs.matmul(w) + self.bias, torch.logsumexp(
+                    g.unsqueeze(-2) + grad.transpose(-2, -1).unsqueeze(-3), -1) if grad is not None else g
+        else:
+            w = self.get_weights()
 
-        return (
-            inputs.matmul(w) + self.bias,
-            torch.logsumexp(g.unsqueeze(-2) + grad.transpose(-2, -1).unsqueeze(-3), -1)
-            if grad is not None
-            else g,
-        )
+            return inputs.matmul(w) + self.bias
+
+
+    def save_weights(self, f):
+        w = self.get_weights()
+        for i in range(w.shape[0]):
+            for j in range(w.shape[1]):
+                f.write('%.16f\t' % (w[i, j].item()))
+            f.write('\n')
 
     def __repr__(self):
         return "MaskedWeight(in_features={}, out_features={}, dim={}, bias={})".format(
@@ -274,8 +319,11 @@ class Tanh(torch.nn.Tanh):
         transformations combined with this transformation.
         """
 
-        g = -2 * (inputs - math.log(2) + torch.nn.functional.softplus(-2 * inputs))
-        return (
-            torch.tanh(inputs),
-            (g.view(grad.shape) + grad) if grad is not None else g,
-        )
+        if self.training:
+            g = -2 * (inputs - math.log(2) + torch.nn.functional.softplus(-2 * inputs))
+            return torch.tanh(inputs), (g.view(grad.shape) + grad) if grad is not None else g
+        else:
+            return torch.tanh(inputs)
+
+    def save_weights(self, f):
+        pass
