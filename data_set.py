@@ -30,35 +30,8 @@ def seg_data(data, debug=False):
     seg_data = torch.Tensor(seg_data)
     return seg_data
 
-def train_data(keys : torch.Tensor, input_dim, train_ratio, grain='point', **kwargs):
-    num_train_keys = int(keys.shape[0] * train_ratio)
-    if len(keys) < 10000:
-        num_train_keys = keys.shape[0]
-    emperical_gap = 0
-    if grain == 'point':
-        perm = torch.randperm(keys.shape[0])
-        train_indices = perm[:num_train_keys]
-    elif grain == 'batch':
-        dim = kwargs['dim']
-        num_total_batches = keys.shape[0] // dim
-        num_train_batches = num_train_keys // dim
-        perm = torch.randperm(num_total_batches)
-        train_indices = None
-        for i in range(num_train_batches):
-            l = perm[i] * dim
-            r = (perm[i] + 1) * dim
-            indices = torch.arange(l, r)
-            train_keys = keys[indices]
-            mean_gaps = (train_keys[1:] - train_keys[:-1]).double().mean()
-            emperical_gap += mean_gaps
-            if train_indices == None:
-                train_indices = indices
-            else:
-                train_indices = torch.cat((train_indices, indices))
-        emperical_gap /= num_train_batches
-    if input_dim == 1:
-        return keys[train_indices], emperical_gap
-    elif input_dim == 2:
-        return seg_data(keys[train_indices]), emperical_gap
-    else:
-        return None, None
+def sample_data(keys : torch.Tensor, ratio):
+    num = np.max((int(keys.shape[0] * ratio), 10000))
+    perm = torch.randperm(keys.shape[0])
+    index = perm[:num]
+    return keys[index]
